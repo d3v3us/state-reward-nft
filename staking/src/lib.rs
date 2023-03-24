@@ -114,8 +114,6 @@ pub mod staking_pool_contract {
                     reward_token,
                     staked_token,
                     staking_deadline: Self::env().block_timestamp() + 365 * 24 * 60 * 60, // 1 year
-                    rewards: vec![],
-                    reward_per_token: 0,
                     halving_period,
                     start_time,
                     ..Default::default()
@@ -133,11 +131,6 @@ pub mod staking_pool_contract {
                 let remaining_days = (staking_contract.staking_deadline
                     - Self::env().block_timestamp())
                     / (24 * 60 * 60);
-                let reward = amount * staking_contract.rewards.last().copied().unwrap_or(0)
-                    / 10_000
-                    / remaining_days as u128;
-                staking_contract.reward_per_token +=
-                    reward * 10_000 / staking_contract.total_staked;
                 staking_contract.on_stake(account, amount);
                 true
             } else {
@@ -160,10 +153,7 @@ pub mod staking_pool_contract {
             let remaining_days = (staking_contract.staking_deadline
                 - Self::env().block_timestamp())
                 / (24 * 60 * 60);
-            let reward = amount * staking_contract.rewards.last().copied().unwrap_or(0)
-                / 10_000
-                / remaining_days as u128;
-            staking_contract.reward_per_token += reward * 10_000 / staking_contract.total_staked;
+           
             staking_contract.on_unstake(account, amount);
             self.transfer_from(account, self.env().account_id(), self.staked_token, amount)?;
 
