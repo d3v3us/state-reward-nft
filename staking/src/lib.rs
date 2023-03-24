@@ -87,11 +87,10 @@ pub mod staking_pool_contract {
     }
 
     impl Contract for StakingPool {}
-    impl PSP37 for Contract {}
+    impl PSP37 for StakingPool {}
 
-    impl PSP37Mintable for Contract {
+    impl PSP37Mintable for StakingPool {
         #[ink(message)]
-        #[modifiers(only_owner)]
         fn mint(
             &mut self,
             to: AccountId,
@@ -128,9 +127,6 @@ pub mod staking_pool_contract {
                 self.transfer_from(account, self.env().account_id(), self.staked_token, amount)?;
             if result {
                 let staking_contract = &mut self.staking_contract;
-                let remaining_days = (staking_contract.staking_deadline
-                    - Self::env().block_timestamp())
-                    / (24 * 60 * 60);
                 staking_contract.on_stake(account, amount);
                 true
             } else {
@@ -150,9 +146,6 @@ pub mod staking_pool_contract {
             if balance < amount {
                 return false;
             }
-            let remaining_days = (staking_contract.staking_deadline
-                - Self::env().block_timestamp())
-                / (24 * 60 * 60);
            
             staking_contract.on_unstake(account, amount);
             self.transfer_from(account, self.env().account_id(), self.staked_token, amount)?;
@@ -175,7 +168,7 @@ pub mod staking_pool_contract {
 
             let unlocked = (self.get_total_staked() * percentage as u128 / 100) as Balance;
 
-            self.transfer_from(account, self.env().account_id(), self.staked_token, amount)?;
+            self.transfer_from(account, self.env().account_id(), self.staked_token, unlocked)?;
             self.claim_reputation();
         }
 

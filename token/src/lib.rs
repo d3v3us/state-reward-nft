@@ -50,7 +50,7 @@ pub mod token {
             instance.metadata.decimals = 18;
             let total_supply = 1_000_000 * 10_u128.pow(18);//1 billion
             assert!(instance._mint_to(Self::env().caller(), initial_supply * 30 / 100).is_ok());
-            assert!(instance._mint_to(staking_contract, initial_supply * 30 / 100).is_ok());
+            assert!(instance._mint_to(staking_contract, initial_supply * 70 / 100).is_ok());
 
             instance
         }
