@@ -6,10 +6,16 @@ pub mod staking_pool_contract {
 
     use ink_prelude::{collections::BTreeMap, vec::Vec};
     use openbrush::contracts::traits::psp22::PSP22Ref;
+
     use openbrush::{
         contract::{contract, Contract},
+        contracts::{
+            ownable::*,
+            psp37::extensions::{burnable::*, mintable::*},
+        },
+        modifiers,
         prelude::*,
-        traits::{OnStake, OnUnstake},
+        traits::Storage,
     };
 
     #[derive(Debug, PartialEq, Eq, scale::Encode, scale::Decode)]
@@ -31,14 +37,14 @@ pub mod staking_pool_contract {
         reward_token: AccountId,
         total_staked: u128,
         staking_deadline: u64,
-        rewards: Vec<u128>,
-        reward_per_token: u128,
         last_update: u64,
+        halving_period: u64,
+        start_time: u64,
+        reputation: BTreeMap<AccountId, u128>,
     }
 
-    impl OnStake<OpenbrushPSP22> for StakingContract {
+    impl StakingContract {
         fn on_stake(&mut self, account: AccountId, amount: u128) {
-            self.rewards.push(self.get_reward_per_token());
             self.balances
                 .entry(account)
                 .and_modify(|balance| *balance += amount)
@@ -46,11 +52,7 @@ pub mod staking_pool_contract {
             self.total_staked += amount;
             self.last_update = Self::env().block_timestamp();
         }
-    }
-
-    impl OnUnstake<OpenbrushPSP22> for StakingContract {
         fn on_unstake(&mut self, account: AccountId, amount: u128) {
-            self.rewards.push(self.get_reward_per_token());
             self.balances
                 .entry(account)
                 .and_modify(|balance| *balance -= amount)
@@ -58,18 +60,55 @@ pub mod staking_pool_contract {
             self.total_staked -= amount;
             self.last_update = Self::env().block_timestamp();
         }
+        pub fn calculate_reputation(&self, account: &AccountId) -> u128 {
+            let balance = self.balances.get(account).copied().unwrap_or(0);
+            let staking_duration = self.last_update - self.start_time;
+            let days_staked = staking_duration / (24 * 60 * 60);
+            balance * days_staked
+        }
+
+        pub fn claim_reputation(&mut self, account: AccountId) {
+            let reputation = self.calculate_reputation(&account);
+            self.reputation
+                .entry(account)
+                .and_modify(|balance| *balance += reputation)
+                .or_insert(reputation);
+        }
+
+        pub fn reputation_of(&self, owner: AccountId) -> u128 {
+            *self.reputation.get(&owner).unwrap_or(&0)
+        }
     }
 
-    #[contract(env = "OpenbrushPSP22")]
+    #[ink(storage)]
     pub struct StakingPool {
         staking_contract: StakingContract,
+        psp37: psp37::Data,
     }
 
     impl Contract for StakingPool {}
+    impl PSP37 for Contract {}
+
+    impl PSP37Mintable for Contract {
+        #[ink(message)]
+        #[modifiers(only_owner)]
+        fn mint(
+            &mut self,
+            to: AccountId,
+            ids_amounts: Vec<(Id, Balance)>,
+        ) -> Result<(), PSP37Error> {
+            self._mint_to(to, ids_amounts)
+        }
+    }
 
     impl StakingPool {
         #[ink(constructor)]
-        pub fn new(reward_token: AccountId, staked_token: AccountId) -> Self {
+        pub fn new(
+            reward_token: AccountId,
+            staked_token: AccountId,
+            halving_period: u64,
+            start_time: u64,
+        ) -> Self {
             Self {
                 staking_contract: StakingContract {
                     reward_token,
@@ -77,6 +116,8 @@ pub mod staking_pool_contract {
                     staking_deadline: Self::env().block_timestamp() + 365 * 24 * 60 * 60, // 1 year
                     rewards: vec![],
                     reward_per_token: 0,
+                    halving_period,
+                    start_time,
                     ..Default::default()
                 },
             }
@@ -85,7 +126,8 @@ pub mod staking_pool_contract {
         #[ink(message)]
         pub fn stake(&mut self, amount: u128) -> bool {
             let account = Self::caller();
-            let result=self.transfer_from(account, self.env().account_id(), self.staked_token, amount)?;
+            let result =
+                self.transfer_from(account, self.env().account_id(), self.staked_token, amount)?;
             if result {
                 let staking_contract = &mut self.staking_contract;
                 let remaining_days = (staking_contract.staking_deadline
@@ -129,43 +171,22 @@ pub mod staking_pool_contract {
         }
 
         #[ink(message)]
-        pub fn claim_rewards(&mut self) -> bool {
+        pub fn distribute_tokens(&mut self) {
             let account = Self::caller();
-            let staking_contract = &mut self.staking_contract;
-            let balance = staking_contract
-                .balances
-                .get(&account)
-                .copied()
-                .unwrap_or(0);
-            let reward_per_token = staking_contract.get_reward_per_token();
-            let earned = balance * reward_per_token / 10_000
-                - staking_contract.rewards.last().copied().unwrap_or(0);
-            if earned == 0 {
-                return false;
-            }
-            staking_contract.rewards.push(earned);
-            self.transfer_from(account, self.env().account_id(), self.reward_token, earned)?;
-            true
-        }
+            let now = Self::env().block_timestamp();
+            let days_passed = (now - self.start_time) / (24 * 60 * 60);
+            let halvings_passed = days_passed / self.staking_contract.halving_period;
 
-        #[ink(message)]
-        pub fn get_reward_per_token(&self) -> u128 {
-            let staking_contract = &self.staking_contract;
-            if staking_contract.total_staked == 0 {
-                return staking_contract.reward_per_token;
+            let mut percentage = 50;
+
+            for _ in 0..halvings_passed {
+                percentage /= 2;
             }
-            let reward = staking_contract.rewards.last().copied().unwrap_or(0);
-            let remaining_days = (staking_contract.staking_deadline
-                - Self::env().block_timestamp())
-                / (24 * 60 * 60);
-            let new_reward = reward / 2;
-            if remaining_days == 0 {
-                return staking_contract.reward_per_token
-                    + new_reward * 10_000 / staking_contract.total_staked;
-            }
-            let reward_per_day = new_reward / remaining_days as u128;
-            staking_contract.reward_per_token
-                + reward_per_day * 10_000 / staking_contract.total_staked
+
+            let unlocked = (self.get_total_staked() * percentage as u128 / 100) as Balance;
+
+            self.transfer_from(account, self.env().account_id(), self.staked_token, amount)?;
+            self.claim_reputation();
         }
 
         #[ink(message)]
@@ -236,6 +257,24 @@ pub mod staking_pool_contract {
             };
 
             Ok(())
+        }
+        //reputation
+        #[ink(message)]
+        pub fn claim_reputation(&mut self) {
+            let account = Self::caller();
+            self.staking_contract.claim_reputation(account);
+            self.mint_tokens()
+        }
+
+         #[ink(message)]
+        pub fn mint_tokens(&mut self amount: Balance) -> Result<(), PSP37Error> {
+            let id="generate_id";
+            self.mint(Self::env().caller(), vec![(id, amount)])
+        }
+
+        #[ink(message)]
+        pub fn reputation_of(&self, owner: AccountId) -> u128 {
+            self.staking_contract.reputation_of(owner)
         }
     }
 }
